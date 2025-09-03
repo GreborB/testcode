@@ -1,0 +1,128 @@
+using System.Collections.Generic;
+using Oxide.Core;
+using UnityEngine;
+
+namespace Oxide.Plugins
+{
+    [Info("CustomBGradeSkin", "Emil & Copilot", "1.0.0")]
+    [Description("Allows players to select building grade or skin using chat commands.")]
+
+    public class CustomBGradeSkin : RustPlugin
+    {
+        // Skin registry: grade → list of skin IDs
+        private Dictionary<BuildingGrade.Enum, List<BlockInfo>> BuildingImages = new();
+
+        // Per-player skin selections
+        private Dictionary<ulong, StoredData> playerData = new();
+
+        private class BlockInfo
+        {
+            public string Title;
+            public string Url;
+            public ulong SkinId;
+        }
+
+        private class StoredData
+        {
+            public BuildingGrade.Enum Grade = BuildingGrade.Enum.Twigs;
+            public ulong SkinId = 0;
+            public bool UseSkin = false;
+        }
+
+        private StoredData GetOrCreateData(BasePlayer player)
+        {
+            if (!playerData.TryGetValue(player.userID, out var data))
+            {
+                data = new StoredData();
+                playerData[player.userID] = data;
+            }
+            return data;
+        }
+
+        // Command: /bgrade <0–4>
+        [ChatCommand("bgrade")]
+        private void CmdBgrade(BasePlayer player, string command, string[] args)
+        {
+            if (args.Length == 0 || !int.TryParse(args[0], out int gradeInt) || gradeInt < 0 || gradeInt > 4)
+            {
+                player.ChatMessage("Usage: /bgrade <0–4> (0=Twig, 1=Wood, 2=Stone, 3=Metal, 4=Armored)");
+                return;
+            }
+
+            var data = GetOrCreateData(player);
+            data.Grade = (BuildingGrade.Enum)gradeInt;
+            data.UseSkin = false;
+            data.SkinId = 0;
+
+            player.ChatMessage($"Building grade set to {data.Grade} with no skin.");
+        }
+
+        // Command: /bskin <keyword>
+        [ChatCommand("bskin")]
+        private void CmdBskin(BasePlayer player, string command, string[] args)
+        {
+            if (args.Length == 0)
+            {
+                player.ChatMessage("Usage: /bskin <adobe|container|brick|brutalist>");
+                return;
+            }
+
+            var keyword = args[0].ToLower();
+            var data = GetOrCreateData(player);
+            var skins = BuildingImages.ContainsKey(data.Grade) ? BuildingImages[data.Grade] : null;
+
+            if (skins == null)
+            {
+                player.ChatMessage($"No skins available for grade {data.Grade}.");
+                return;
+            }
+
+            var match = skins.Find(s => s.Title.ToLower() == keyword);
+            if (match == null)
+            {
+                player.ChatMessage($"Skin '{keyword}' not found for grade {data.Grade}.");
+                return;
+            }
+
+            data.UseSkin = true;
+            data.SkinId = match.SkinId;
+
+            player.ChatMessage($"Skin '{match.Title}' applied for grade {data.Grade}.");
+        }
+
+        // Hook: When a building block is placed
+        private void OnEntityBuilt(Planner planner, GameObject gameObject)
+        {
+            var player = planner?.GetOwnerPlayer();
+            var block = gameObject?.GetComponent<BuildingBlock>();
+            if (player == null || block == null) return;
+
+            var data = GetOrCreateData(player);
+            block.SetGrade(data.Grade);
+
+            if (data.UseSkin && data.SkinId != 0)
+            {
+                block.skinID = data.SkinId;
+                block.ChangeGradeAndSkin(data.Grade, data.SkinId, true, true);
+            }
+
+            block.health = block.MaxHealth();
+            block.SendNetworkUpdate();
+        }
+
+        // Optional: Load skins from config or external plugin
+        private void OnServerInitialized()
+        {
+            // Example: populate BuildingImages manually or via external loader
+            BuildingImages[BuildingGrade.Enum.Stone] = new List<BlockInfo>
+            {
+                new BlockInfo { Title = "Adobe", SkinId = 1234567890 },
+                new BlockInfo { Title = "Container", SkinId = 2345678901 },
+                new BlockInfo { Title = "Brick", SkinId = 3456789012 },
+                new BlockInfo { Title = "Brutalist", SkinId = 4567890123 }
+            };
+
+            // You can replace this with actual skin loading logic from your plugin
+        }
+    }
+}
