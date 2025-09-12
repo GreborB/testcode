@@ -4,7 +4,7 @@ using System.Collections.Generic;
 
 namespace Oxide.Plugins
 {
-    [Info("RemoveWithHammer", "K", "1.2.0")]
+    [Info("RemoveWithHammer", "Kinas Playground", "1.2.0")]
     [Description("Removes building blocks with Shift+R while holding a hammer. /remove all toggles mass removal mode.")]
 
     public class RemoveWithHammer : RustPlugin
