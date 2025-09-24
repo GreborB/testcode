@@ -1,128 +1,118 @@
 using System.Collections.Generic;
-using Oxide.Core;
 using UnityEngine;
 
 namespace Oxide.Plugins
 {
-    [Info("CustomBGradeSkin", "Emil & Copilot", "1.0.0")]
-    [Description("Allows players to select building grade or skin using chat commands.")]
+    [Info("CustomBGradeSkin", "Emil", "1.0.0")]
+    [Description("Unified building grade and skin plugin with text-based control")]
 
     public class CustomBGradeSkin : RustPlugin
     {
-        // Skin registry: grade → list of skin IDs
-        private Dictionary<BuildingGrade.Enum, List<BlockInfo>> BuildingImages = new();
+        private const string permUse = "custombgradeskin.use";
 
-        // Per-player skin selections
-        private Dictionary<ulong, StoredData> playerData = new();
+        private readonly Dictionary<ulong, BuildingGrade.Enum> PlayerGrades = new();
+        private readonly Dictionary<ulong, string> PlayerSkins = new();
 
-        private class BlockInfo
+        private readonly Dictionary<string, SkinProfile> SkinProfiles = new()
         {
-            public string Title;
-            public string Url;
+            { "adobe", new SkinProfile(BuildingGrade.Enum.Stone, 10220) },
+            { "brick", new SkinProfile(BuildingGrade.Enum.Stone, 10223) },
+            { "brutalist", new SkinProfile(BuildingGrade.Enum.Stone, 10225) },
+            { "jungle", new SkinProfile(BuildingGrade.Enum.Stone, 10326) },
+            { "container", new SkinProfile(BuildingGrade.Enum.Metal, 10221) }
+            // Add more skins here as needed
+        };
+
+        private class SkinProfile
+        {
+            public BuildingGrade.Enum Grade;
             public ulong SkinId;
-        }
 
-        private class StoredData
-        {
-            public BuildingGrade.Enum Grade = BuildingGrade.Enum.Twigs;
-            public ulong SkinId = 0;
-            public bool UseSkin = false;
-        }
-
-        private StoredData GetOrCreateData(BasePlayer player)
-        {
-            if (!playerData.TryGetValue(player.userID, out var data))
+            public SkinProfile(BuildingGrade.Enum grade, ulong skinId)
             {
-                data = new StoredData();
-                playerData[player.userID] = data;
+                Grade = grade;
+                SkinId = skinId;
             }
-            return data;
         }
 
-        // Command: /bgrade <0–4>
+        void Init()
+        {
+            permission.RegisterPermission(permUse, this);
+        }
+
         [ChatCommand("bgrade")]
-        private void CmdBgrade(BasePlayer player, string command, string[] args)
+        private void CmdBGrade(BasePlayer player, string command, string[] args)
         {
-            if (args.Length == 0 || !int.TryParse(args[0], out int gradeInt) || gradeInt < 0 || gradeInt > 4)
+            if (!permission.UserHasPermission(player.UserIDString, permUse))
             {
-                player.ChatMessage("Usage: /bgrade <0–4> (0=Twig, 1=Wood, 2=Stone, 3=Metal, 4=Armored)");
+                SendReply(player, "You don't have permission to use /bgrade.");
                 return;
             }
 
-            var data = GetOrCreateData(player);
-            data.Grade = (BuildingGrade.Enum)gradeInt;
-            data.UseSkin = false;
-            data.SkinId = 0;
+            if (args.Length != 1 || !int.TryParse(args[0], out int gradeInt) || gradeInt < 0 || gradeInt > 4)
+            {
+                SendReply(player, "Usage: /bgrade <0-4> (0=Twig, 1=Wood, 2=Stone, 3=Metal, 4=Armored)");
+                return;
+            }
 
-            player.ChatMessage($"Building grade set to {data.Grade} with no skin.");
+            var grade = (BuildingGrade.Enum)gradeInt;
+            PlayerGrades[player.userID] = grade;
+            SendReply(player, $"Building grade set to: {grade}");
         }
 
-        // Command: /bskin <keyword>
         [ChatCommand("bskin")]
-        private void CmdBskin(BasePlayer player, string command, string[] args)
+        private void CmdBSkin(BasePlayer player, string command, string[] args)
         {
-            if (args.Length == 0)
+            if (!permission.UserHasPermission(player.UserIDString, permUse))
             {
-                player.ChatMessage("Usage: /bskin <adobe|container|brick|brutalist>");
+                SendReply(player, "You don't have permission to use /bskin.");
                 return;
             }
 
-            var keyword = args[0].ToLower();
-            var data = GetOrCreateData(player);
-            var skins = BuildingImages.ContainsKey(data.Grade) ? BuildingImages[data.Grade] : null;
-
-            if (skins == null)
+            if (args.Length != 1)
             {
-                player.ChatMessage($"No skins available for grade {data.Grade}.");
+                SendReply(player, "Usage: /bskin <skinname> or /bskin off");
                 return;
             }
 
-            var match = skins.Find(s => s.Title.ToLower() == keyword);
-            if (match == null)
+            string skin = args[0].ToLower();
+
+            if (skin == "off")
             {
-                player.ChatMessage($"Skin '{keyword}' not found for grade {data.Grade}.");
+                PlayerSkins.Remove(player.userID);
+                SendReply(player, "Building skin disabled.");
                 return;
             }
 
-            data.UseSkin = true;
-            data.SkinId = match.SkinId;
+            if (!SkinProfiles.ContainsKey(skin))
+            {
+                SendReply(player, $"Skin '{skin}' not recognized.");
+                return;
+            }
 
-            player.ChatMessage($"Skin '{match.Title}' applied for grade {data.Grade}.");
+            PlayerSkins[player.userID] = skin;
+            PlayerGrades[player.userID] = SkinProfiles[skin].Grade; // Auto-switch grade
+            SendReply(player, $"Building skin set to: {skin} (Grade auto-switched to {SkinProfiles[skin].Grade})");
         }
 
-        // Hook: When a building block is placed
-        private void OnEntityBuilt(Planner planner, GameObject gameObject)
+        private void OnEntityBuilt(Planner planner, GameObject go)
         {
             var player = planner?.GetOwnerPlayer();
-            var block = gameObject?.GetComponent<BuildingBlock>();
+            var block = go?.GetComponent<BuildingBlock>();
             if (player == null || block == null) return;
 
-            var data = GetOrCreateData(player);
-            block.SetGrade(data.Grade);
-
-            if (data.UseSkin && data.SkinId != 0)
-            {
-                block.skinID = data.SkinId;
-                block.ChangeGradeAndSkin(data.Grade, data.SkinId, true, true);
-            }
-
+            // Determine grade
+            BuildingGrade.Enum grade = PlayerGrades.TryGetValue(player.userID, out var g) ? g : BuildingGrade.Enum.Twigs;
+            block.SetGrade(grade);
             block.health = block.MaxHealth();
-            block.SendNetworkUpdate();
-        }
 
-        // Optional: Load skins from config or external plugin
-        private void OnServerInitialized()
-        {
-            // Example: populate BuildingImages manually or via external loader
-            BuildingImages[BuildingGrade.Enum.Stone] = new List<BlockInfo>
+            // Apply skin if set
+            if (PlayerSkins.TryGetValue(player.userID, out var skinName) &&
+                SkinProfiles.TryGetValue(skinName, out var profile))
             {
-                new BlockInfo { Title = "Adobe", SkinId = 1234567890 },
-                new BlockInfo { Title = "Container", SkinId = 2345678901 },
-                new BlockInfo { Title = "Brick", SkinId = 3456789012 },
-                new BlockInfo { Title = "Brutalist", SkinId = 4567890123 }
-            };
-
-            // You can replace this with actual skin loading logic from your plugin
+                block.skinID = profile.SkinId;
+                block.SendNetworkUpdate();
+            }
         }
     }
 }
