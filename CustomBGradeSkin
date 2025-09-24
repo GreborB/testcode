@@ -1,27 +1,15 @@
 using System.Collections.Generic;
+using Oxide.Game.Rust.Cui;
 using UnityEngine;
 
 namespace Oxide.Plugins
 {
-    [Info("CustomBGradeSkin", "Emil", "1.0.0")]
-    [Description("Unified building grade and skin plugin with text-based control")]
+    [Info("CustomBGradeSkin", "Kina", "1.3.0")]
+    [Description("Handles building upgrades with skins and shows GUI help for /bgrade help and /bskin help")]
 
     public class CustomBGradeSkin : RustPlugin
     {
-        private const string permUse = "custombgradeskin.use";
-
-        private readonly Dictionary<ulong, BuildingGrade.Enum> PlayerGrades = new();
-        private readonly Dictionary<ulong, string> PlayerSkins = new();
-
-        private readonly Dictionary<string, SkinProfile> SkinProfiles = new()
-        {
-            { "adobe", new SkinProfile(BuildingGrade.Enum.Stone, 10220) },
-            { "brick", new SkinProfile(BuildingGrade.Enum.Stone, 10223) },
-            { "brutalist", new SkinProfile(BuildingGrade.Enum.Stone, 10225) },
-            { "jungle", new SkinProfile(BuildingGrade.Enum.Stone, 10326) },
-            { "container", new SkinProfile(BuildingGrade.Enum.Metal, 10221) }
-            // Add more skins here as needed
-        };
+        private const string HelpPanel = "BGradeSkinHelp.Panel";
 
         private class SkinProfile
         {
@@ -35,84 +23,207 @@ namespace Oxide.Plugins
             }
         }
 
-        void Init()
+        private class PlayerData
         {
-            permission.RegisterPermission(permUse, this);
+            public BuildingGrade.Enum Grade = BuildingGrade.Enum.Twigs;
+            public SkinProfile SkinOverride = null;
         }
+
+        private Dictionary<ulong, PlayerData> playerData = new();
+
+        private Dictionary<string, SkinProfile> skinProfiles = new Dictionary<string, SkinProfile>
+        {
+            { "adobe", new SkinProfile(BuildingGrade.Enum.Stone, 10220) },
+            { "brick", new SkinProfile(BuildingGrade.Enum.Stone, 10223) },
+            { "brutalist", new SkinProfile(BuildingGrade.Enum.Stone, 10225) },
+            { "jungle", new SkinProfile(BuildingGrade.Enum.Stone, 10326) },
+            { "container", new SkinProfile(BuildingGrade.Enum.Metal, 10221) }
+            // Add more skins here as needed
+        };
 
         [ChatCommand("bgrade")]
         private void CmdBGrade(BasePlayer player, string command, string[] args)
         {
-            if (!permission.UserHasPermission(player.UserIDString, permUse))
+            if (args.Length == 1 && args[0].ToLower() == "help")
             {
-                SendReply(player, "You don't have permission to use /bgrade.");
+                ShowHelpUI(player, "/bgrade Help", new List<string>
+                {
+                    "<color=#00ffff>/bgrade <grade></color> - Set building upgrade grade",
+                    "Grades:",
+                    "0 = Twig",
+                    "1 = Wood",
+                    "2 = Stone",
+                    "3 = Metal",
+                    "4 = Armored",
+                    "Note: Skin override will be disabled when using /bgrade"
+                });
                 return;
             }
 
             if (args.Length != 1 || !int.TryParse(args[0], out int gradeInt) || gradeInt < 0 || gradeInt > 4)
             {
-                SendReply(player, "Usage: /bgrade <0-4> (0=Twig, 1=Wood, 2=Stone, 3=Metal, 4=Armored)");
+                player.ChatMessage("Usage: /bgrade <grade> (0–4)");
                 return;
             }
 
-            var grade = (BuildingGrade.Enum)gradeInt;
-            PlayerGrades[player.userID] = grade;
-            SendReply(player, $"Building grade set to: {grade}");
+            var data = GetPlayerData(player);
+            data.Grade = (BuildingGrade.Enum)gradeInt;
+
+            if (data.SkinOverride != null)
+            {
+                data.SkinOverride = null;
+                player.ChatMessage("Skin override disabled to allow proper grade upgrade.");
+            }
+
+            player.ChatMessage($"BGrade set to {data.Grade}.");
         }
 
         [ChatCommand("bskin")]
         private void CmdBSkin(BasePlayer player, string command, string[] args)
         {
-            if (!permission.UserHasPermission(player.UserIDString, permUse))
+            if (args.Length == 1 && args[0].ToLower() == "help")
             {
-                SendReply(player, "You don't have permission to use /bskin.");
+                var skins = string.Join(", ", skinProfiles.Keys);
+                ShowHelpUI(player, "/bskin Help", new List<string>
+                {
+                    "<color=#00ffff>/bskin <skinName></color> - Set default skin for building",
+                    "<color=#00ffff>/bskin off</color> - Disable skin override",
+                    "Available skins:",
+                    skins
+                });
                 return;
             }
 
             if (args.Length != 1)
             {
-                SendReply(player, "Usage: /bskin <skinname> or /bskin off");
+                player.ChatMessage("Usage: /bskin <skinName> or /bskin off");
                 return;
             }
 
-            string skin = args[0].ToLower();
+            var data = GetPlayerData(player);
+            string arg = args[0].ToLower();
 
-            if (skin == "off")
+            if (arg == "off")
             {
-                PlayerSkins.Remove(player.userID);
-                SendReply(player, "Building skin disabled.");
+                data.SkinOverride = null;
+                player.ChatMessage("Skin override disabled.");
                 return;
             }
 
-            if (!SkinProfiles.ContainsKey(skin))
+            if (!skinProfiles.ContainsKey(arg))
             {
-                SendReply(player, $"Skin '{skin}' not recognized.");
+                player.ChatMessage($"Unknown skin '{arg}'. Type /bskin help for options.");
                 return;
             }
 
-            PlayerSkins[player.userID] = skin;
-            PlayerGrades[player.userID] = SkinProfiles[skin].Grade; // Auto-switch grade
-            SendReply(player, $"Building skin set to: {skin} (Grade auto-switched to {SkinProfiles[skin].Grade})");
+            data.SkinOverride = skinProfiles[arg];
+            player.ChatMessage($"Skin override set to '{arg}' (Grade: {data.SkinOverride.Grade}, ID: {data.SkinOverride.SkinId}).");
         }
 
-        private void OnEntityBuilt(Planner planner, GameObject go)
+        private PlayerData GetPlayerData(BasePlayer player)
+        {
+            if (!playerData.ContainsKey(player.userID))
+                playerData[player.userID] = new PlayerData();
+            return playerData[player.userID];
+        }
+
+        void OnEntityBuilt(Planner planner, GameObject go)
         {
             var player = planner?.GetOwnerPlayer();
-            var block = go?.GetComponent<BuildingBlock>();
-            if (player == null || block == null) return;
+            if (player == null || go == null) return;
 
-            // Determine grade
-            BuildingGrade.Enum grade = PlayerGrades.TryGetValue(player.userID, out var g) ? g : BuildingGrade.Enum.Twigs;
-            block.SetGrade(grade);
-            block.health = block.MaxHealth();
+            var block = go.GetComponent<BuildingBlock>();
+            if (block == null) return;
 
-            // Apply skin if set
-            if (PlayerSkins.TryGetValue(player.userID, out var skinName) &&
-                SkinProfiles.TryGetValue(skinName, out var profile))
+            var data = GetPlayerData(player);
+
+            if (data.SkinOverride != null)
             {
-                block.skinID = profile.SkinId;
-                block.SendNetworkUpdate();
+                block.SetGrade(data.SkinOverride.Grade);
+                block.skinID = data.SkinOverride.SkinId;
             }
+            else
+            {
+                block.SetGrade(data.Grade);
+            }
+
+			block.health = block.MaxHealth();
+            block.SendNetworkUpdate();
         }
+
+        [ConsoleCommand("bgradeskinui.close")]
+        private void CmdClose(ConsoleSystem.Arg arg)
+        {
+            var player = arg.Player();
+            if (player != null)
+                CuiHelper.DestroyUi(player, HelpPanel);
+        }
+
+        private void ShowHelpUI(BasePlayer player, string title, List<string> lines)
+        {
+            CuiHelper.DestroyUi(player, HelpPanel);
+
+            var container = new CuiElementContainer();
+
+            container.Add(new CuiElement
+            {
+                Name = HelpPanel,
+                Parent = "Overlay",
+                Components =
+                {
+                    new CuiImageComponent { Color = "0 0 0 0.85" },
+                    new CuiRectTransformComponent { AnchorMin = "0.3 0.2", AnchorMax = "0.7 0.8" },
+                    new CuiNeedsCursorComponent()
+                }
+            });
+
+            container.Add(new CuiElement
+            {
+                Name = "BGradeSkinHelp.Title",
+                Parent = HelpPanel,
+                Components =
+                {
+                    new CuiTextComponent
+                    {
+                        Text = title,
+                        FontSize = 24,
+                        Align = TextAnchor.UpperCenter,
+                        Color = "1 1 1 1"
+                    },
+                    new CuiRectTransformComponent { AnchorMin = "0 0.86", AnchorMax = "1 0.98" }
+                }
+            });
+
+            container.Add(new CuiElement
+            {
+                Name = "BGradeSkinHelp.Content",
+                Parent = HelpPanel,
+                Components =
+                {
+                    new CuiTextComponent
+                    {
+                        Text = string.Join("\n", lines),
+                        FontSize = 18,
+                        Align = TextAnchor.UpperLeft,
+                        Color = "1 1 1 1"
+                    },
+                    new CuiRectTransformComponent { AnchorMin = "0.05 0.14", AnchorMax = "0.95 0.84" }
+                }
+            });
+
+            var closeButton = new CuiButton
+            {
+                Button = { Color = "0.8 0.2 0.2 1", Command = "bgradeskinui.close" },
+                RectTransform = { AnchorMin = "0.4 0.04", AnchorMax = "0.6 0.11" },
+                Text = { Text = "Close", Align = TextAnchor.MiddleCenter, FontSize = 18 }
+            };
+            container.Add(closeButton, HelpPanel);
+
+            CuiHelper.AddUi(player, container);
+        }
+
+        void OnPlayerDisconnected(BasePlayer player) => CuiHelper.DestroyUi(player, HelpPanel);
+        void OnPlayerRespawned(BasePlayer player) => CuiHelper.DestroyUi(player, HelpPanel);
+        void OnPlayerDeath(BasePlayer player, HitInfo info) => CuiHelper.DestroyUi(player, HelpPanel);
     }
 }
